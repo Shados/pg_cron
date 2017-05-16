@@ -17,6 +17,7 @@
 #include "pg_cron.h"
 #include "job_metadata.h"
 #include "cron_job.h"
+#include "pg_cron_utility.h"
 
 #include "access/genam.h"
 #include "access/heapam.h"
@@ -44,8 +45,6 @@
 #include "utils/syscache.h"
 
 
-#define EXTENSION_NAME "pg_cron"
-#define CRON_SCHEMA_NAME "cron"
 #define JOBS_TABLE_NAME "job"
 #define JOB_ID_INDEX_NAME "job_pkey"
 #define JOB_ID_SEQUENCE_NAME "cron.jobid_seq"
@@ -54,8 +53,6 @@
 /* forward declarations */
 static HTAB * CreateCronJobHash(void);
 
-static int64 NextJobId(void);
-static Oid CronExtensionOwner(void);
 static void InvalidateJobCacheCallback(Datum argument, Oid relationId);
 static void InvalidateJobCache(void);
 static Oid CronJobRelationId(void);
@@ -165,12 +162,6 @@ cron_schedule(PG_FUNCTION_ARGS)
 	int64 jobId = 0;
 	Datum jobIdDatum = 0;
 
-	Oid cronSchemaId = InvalidOid;
-	Oid cronJobsRelationId = InvalidOid;
-
-	Relation cronJobsTable = NULL;
-	TupleDesc tupleDescriptor = NULL;
-	HeapTuple heapTuple = NULL;
 	Datum values[Natts_cron_job];
 	bool isNulls[Natts_cron_job];
 
@@ -190,7 +181,7 @@ cron_schedule(PG_FUNCTION_ARGS)
 	memset(values, 0, sizeof(values));
 	memset(isNulls, false, sizeof(isNulls));
 
-	jobId = NextJobId();
+	jobId = NextSeqId(JOB_ID_SEQUENCE_NAME);
 	jobIdDatum = Int64GetDatum(jobId);
 
 	values[Anum_cron_job_jobid - 1] = jobIdDatum;
@@ -201,106 +192,19 @@ cron_schedule(PG_FUNCTION_ARGS)
 	values[Anum_cron_job_database - 1] = CStringGetTextDatum(CronTableDatabaseName);
 	values[Anum_cron_job_username - 1] = CStringGetTextDatum(userName);
 
-	cronSchemaId = get_namespace_oid(CRON_SCHEMA_NAME, false);
-	cronJobsRelationId = get_relname_relid(JOBS_TABLE_NAME, cronSchemaId);
+  AddValues(JOBS_TABLE_NAME, values, isNulls);
 
-	/* open jobs relation and insert new tuple */
-	cronJobsTable = heap_open(cronJobsRelationId, RowExclusiveLock);
-
-	tupleDescriptor = RelationGetDescr(cronJobsTable);
-	heapTuple = heap_form_tuple(tupleDescriptor, values, isNulls);
-
-	simple_heap_insert(cronJobsTable, heapTuple);
-	CatalogUpdateIndexes(cronJobsTable, heapTuple);
-	CommandCounterIncrement();
-
-	/* close relation and invalidate previous cache entry */
-	heap_close(cronJobsTable, RowExclusiveLock);
+  if (CronLogStatement)
+  {
+    char *hist_message = (char *) malloc(1025 * sizeof(char));
+    snprintf(hist_message, 1024, "created: %s", command); /* TODO actual max value */
+    AddJobHistory(jobId, hist_message);
+  }
 
 	InvalidateJobCache();
 
 	PG_RETURN_INT64(jobId);
 }
-
-
-/*
- * NextJobId returns a new, unique job ID using the job ID sequence.
- */
-static int64
-NextJobId(void)
-{
-	text *sequenceName = NULL;
-	Oid sequenceId = InvalidOid;
-	List *sequenceNameList = NIL;
-	RangeVar *sequenceVar = NULL;
-	Datum sequenceIdDatum = InvalidOid;
-	Oid savedUserId = InvalidOid;
-	int savedSecurityContext = 0;
-	Datum jobIdDatum = 0;
-	int64 jobId = 0;
-	bool failOK = true;
-
-	/* resolve relationId from passed in schema and relation name */
-	sequenceName = cstring_to_text(JOB_ID_SEQUENCE_NAME);
-	sequenceNameList = textToQualifiedNameList(sequenceName);
-	sequenceVar = makeRangeVarFromNameList(sequenceNameList);
-	sequenceId = RangeVarGetRelid(sequenceVar, NoLock, failOK);
-	sequenceIdDatum = ObjectIdGetDatum(sequenceId);
-
-	GetUserIdAndSecContext(&savedUserId, &savedSecurityContext);
-	SetUserIdAndSecContext(CronExtensionOwner(), SECURITY_LOCAL_USERID_CHANGE);
-
-	/* generate new and unique colocation id from sequence */
-	jobIdDatum = DirectFunctionCall1(nextval_oid, sequenceIdDatum);
-
-	SetUserIdAndSecContext(savedUserId, savedSecurityContext);
-
-	jobId = DatumGetUInt32(jobIdDatum);
-
-	return jobId;
-}
-
-
-/*
- * CronExtensionOwner returns the name of the user that owns the
- * extension.
- */
-static Oid
-CronExtensionOwner(void)
-{
-	Relation extensionRelation = NULL;
-	SysScanDesc scanDescriptor;
-	ScanKeyData entry[1];
-	HeapTuple extensionTuple = NULL;
-	Form_pg_extension extensionForm = NULL;
-	Oid extensionOwner = InvalidOid;
-
-	extensionRelation = heap_open(ExtensionRelationId, AccessShareLock);
-
-	ScanKeyInit(&entry[0],
-				Anum_pg_extension_extname,
-				BTEqualStrategyNumber, F_NAMEEQ,
-				CStringGetDatum(EXTENSION_NAME));
-
-	scanDescriptor = systable_beginscan(extensionRelation, ExtensionNameIndexId,
-										true, NULL, 1, entry);
-
-	extensionTuple = systable_getnext(scanDescriptor);
-	if (!HeapTupleIsValid(extensionTuple))
-	{
-		ereport(ERROR, (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-						errmsg("pg_cron extension not loaded")));
-	}
-
-	extensionForm = (Form_pg_extension) GETSTRUCT(extensionTuple);
-	extensionOwner = extensionForm->extowner;
-
-	systable_endscan(scanDescriptor);
-	heap_close(extensionRelation, AccessShareLock);
-
-	return extensionOwner;
-}
-
 
 /*
  * cluster_unschedule removes a cron job.

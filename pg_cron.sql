@@ -14,6 +14,7 @@ $$;
 
 CREATE SCHEMA cron;
 CREATE SEQUENCE cron.jobid_seq;
+CREATE SEQUENCE cron.histid_seq;
 
 CREATE TABLE cron.job (
 	jobid bigint primary key default nextval('cron.jobid_seq'),
@@ -24,9 +25,18 @@ CREATE TABLE cron.job (
 	database text not null default current_database(),
 	username text not null default current_user
 );
+CREATE TABLE cron.history (
+  histid bigint primary key default nextval('cron.histid_seq'),
+  jobid bigint not null,
+  message text not null,
+  created_at timestamp with time zone not null default NOW()
+);
+
 GRANT SELECT ON cron.job TO public;
 ALTER TABLE cron.job ENABLE ROW LEVEL SECURITY;
 CREATE POLICY cron_job_policy ON cron.job USING (username = current_user);
+
+GRANT SELECT ON cron.history TO public;
 
 CREATE FUNCTION cron.schedule(schedule text, command text)
     RETURNS bigint

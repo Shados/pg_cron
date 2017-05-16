@@ -14,6 +14,6 @@
 
 /* global settings */
 extern char *CronTableDatabaseName;
-
+extern bool CronLogStatement;
 
 #endif

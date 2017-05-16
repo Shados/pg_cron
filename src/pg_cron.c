@@ -29,6 +29,7 @@
 #include "pg_cron.h"
 #include "task_states.h"
 #include "job_metadata.h"
+#include "pg_cron_utility.h"
 
 #include "poll.h"
 #include "sys/time.h"
@@ -63,7 +64,6 @@
 #include "utils/syscache.h"
 #include "utils/timestamp.h"
 #include "tcop/utility.h"
-
 
 PG_MODULE_MAGIC;
 
@@ -102,7 +102,7 @@ static void ManageCronTask(CronTask *task, TimestampTz currentTime);
 
 /* global settings */
 char *CronTableDatabaseName = "postgres";
-static bool CronLogStatement = true;
+bool CronLogStatement = true;
 
 /* flags set by signal handlers */
 static volatile sig_atomic_t got_sigterm = false;
@@ -723,7 +723,6 @@ PollForTasks(List *taskList)
 	pfree(pollFDs);
 }
 
-
 /*
  * ManageCronTasks proceeds the state machines of the given list of tasks.
  */
@@ -807,9 +806,13 @@ ManageCronTask(CronTask *task, TimestampTz currentTime)
 			if (CronLogStatement)
 			{
 				char *command = cronJob->command;
+        char *hist_message = (char *) malloc(1025 * sizeof(char));
 
 				ereport(LOG, (errmsg("cron job %ld starting: %s",
 									 jobId, command)));
+
+        snprintf(hist_message, 1024, "started: %s", command); /* TODO actual max value */
+        AddJobHistory(jobId, hist_message);
 			}
 
 			connection = PQconnectStartParams(keywordArray, valueArray, false);
