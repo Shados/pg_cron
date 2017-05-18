@@ -806,13 +806,14 @@ ManageCronTask(CronTask *task, TimestampTz currentTime)
 			if (CronLogStatement)
 			{
 				char *command = cronJob->command;
-        char *hist_message = (char *) malloc(1025 * sizeof(char));
+        int64 message_size = HIST_MSG_MAXSZ + strlen(command);
+        char *hist_message = (char *) malloc(message_size * sizeof(char));
 
 				ereport(LOG, (errmsg("cron job %ld starting: %s",
 									 jobId, command)));
 
-        snprintf(hist_message, 1024, "started: %s", command); /* TODO actual max value */
-        AddJobHistory(jobId, hist_message);
+        snprintf(hist_message, message_size, HIST_MSG_CRON_STARTED, command);
+        AddJobHistory(jobId, hist_message, true);
 			}
 
 			connection = PQconnectStartParams(keywordArray, valueArray, false);
@@ -1015,8 +1016,15 @@ ManageCronTask(CronTask *task, TimestampTz currentTime)
 							char *cmdStatus = PQcmdStatus(result);
 							char *cmdTuples = PQcmdTuples(result);
 
+              char *command = cronJob->command;
+              int64 message_size = HIST_MSG_MAXSZ + strlen(command) + strlen(cmdStatus) + strlen(cmdTuples);
+              char *hist_message = (char *) malloc(message_size * sizeof(char));
+
 							ereport(LOG, (errmsg("cron job %ld completed: %s %s",
 												 jobId, cmdStatus, cmdTuples)));
+
+              snprintf(hist_message, message_size, HIST_MSG_CRON_COMPLETED, command, cmdStatus, cmdTuples);
+              AddJobHistory(jobId, hist_message, true);
 						}
 
 						break;
@@ -1099,8 +1107,14 @@ ManageCronTask(CronTask *task, TimestampTz currentTime)
 
 			if (task->errorMessage != NULL)
 			{
+        int64 message_size = HIST_MSG_MAXSZ + strlen(task->errorMessage);
+        char *hist_message = (char *) malloc(message_size * sizeof(char));
+
 				ereport(LOG, (errmsg("cron job %ld %s",
 									 jobId, task->errorMessage)));
+
+        snprintf(hist_message, message_size, HIST_MSG_CRON_FAILED_WITH_MESSAGE, cronJob->command, task->errorMessage);
+        AddJobHistory(jobId, hist_message, true);
 			}
 			else
 			{

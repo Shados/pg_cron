@@ -22,10 +22,15 @@
 #define Anum_cron_hist_message 3
 #define Anum_cron_hist_created_at 4
 
+/* History record text constants */
+#define HIST_MSG_MAXSZ 256
+#define HIST_MSG_CRON_SCHEDULED "{\"event\": \"scheduled\", \"schedule\": \"%s\", \"command\": \"%s\"}"
+#define HIST_MSG_CRON_UNSCHEDULED "{\"event\": \"unscheduled\", \"command\": \"%s\"}"
+#define HIST_MSG_CRON_STARTED "{\"event\": \"started\", \"command\": \"%s\"}"
+#define HIST_MSG_CRON_COMPLETED "{\"event\": \"completed\", \"command\": \"%s\", \"command_status\": \"%s\", \"tuples\": \"%s\"}"
+#define HIST_MSG_CRON_FAILED_WITH_MESSAGE "{\"event\": \"failed\", \"command\": \"%s\", \"message\": \"%s\"}"
+
 /* utility functions */
-extern int64 NextSeqId(const char *sequence);
-extern Oid CronExtensionOwner(void);
-extern void AddValues(const char *rel, Datum *values, bool *isNulls);
-extern void AddJobHistory(int64 jobId, char *message);
+extern void AddJobHistory(int64 jobId, const char *message, bool newTransaction);
 
 #endif
