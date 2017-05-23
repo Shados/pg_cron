@@ -806,14 +806,11 @@ ManageCronTask(CronTask *task, TimestampTz currentTime)
 			if (CronLogStatement)
 			{
 				char *command = cronJob->command;
-        int64 message_size = HIST_MSG_MAXSZ + strlen(command);
-        char *hist_message = (char *) malloc(message_size * sizeof(char));
 
 				ereport(LOG, (errmsg("cron job %ld starting: %s",
 									 jobId, command)));
 
-        snprintf(hist_message, message_size, HIST_MSG_CRON_STARTED, command);
-        AddJobHistory(jobId, hist_message, true);
+        RecordJobStarted(jobId, command);
 			}
 
 			connection = PQconnectStartParams(keywordArray, valueArray, false);
@@ -1016,15 +1013,11 @@ ManageCronTask(CronTask *task, TimestampTz currentTime)
 							char *cmdStatus = PQcmdStatus(result);
 							char *cmdTuples = PQcmdTuples(result);
 
-              char *command = cronJob->command;
-              int64 message_size = HIST_MSG_MAXSZ + strlen(command) + strlen(cmdStatus) + strlen(cmdTuples);
-              char *hist_message = (char *) malloc(message_size * sizeof(char));
-
 							ereport(LOG, (errmsg("cron job %ld completed: %s %s",
 												 jobId, cmdStatus, cmdTuples)));
 
-              snprintf(hist_message, message_size, HIST_MSG_CRON_COMPLETED, command, cmdStatus, cmdTuples);
-              AddJobHistory(jobId, hist_message, true);
+              ereport(LOG, (errmsg("Adding history"))); /* DEBUG */
+              RecordJobCompletedStatus(jobId, cronJob->command, cmdStatus, cmdTuples);
 						}
 
 						break;
@@ -1072,6 +1065,8 @@ ManageCronTask(CronTask *task, TimestampTz currentTime)
 												 "%d %s",
 												 jobId, tupleCount,
 												 rowString)));
+
+              RecordJobCompleted(jobId, cronJob->command, tupleCount);
 						}
 
 						break;
@@ -1107,18 +1102,16 @@ ManageCronTask(CronTask *task, TimestampTz currentTime)
 
 			if (task->errorMessage != NULL)
 			{
-        int64 message_size = HIST_MSG_MAXSZ + strlen(task->errorMessage);
-        char *hist_message = (char *) malloc(message_size * sizeof(char));
-
 				ereport(LOG, (errmsg("cron job %ld %s",
 									 jobId, task->errorMessage)));
 
-        snprintf(hist_message, message_size, HIST_MSG_CRON_FAILED_WITH_MESSAGE, cronJob->command, task->errorMessage);
-        AddJobHistory(jobId, hist_message, true);
+        RecordJobFailedMessage(jobId, cronJob->command, task->errorMessage);
 			}
 			else
 			{
 				ereport(LOG, (errmsg("cron job %ld failed", jobId)));
+
+        RecordJobFailed(jobId, cronJob->command);
 			}
 
 			task->startDeadline = 0;

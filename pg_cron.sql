@@ -28,7 +28,7 @@ CREATE TABLE cron.job (
 CREATE TABLE cron.history (
   histid bigint primary key default nextval('cron.histid_seq'),
   jobid bigint not null,
-  message text not null,
+  message jsonb not null,
   created_at timestamp with time zone not null default NOW()
 );
 

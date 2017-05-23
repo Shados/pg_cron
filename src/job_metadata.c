@@ -218,10 +218,7 @@ cron_schedule(PG_FUNCTION_ARGS)
 
   if (CronLogStatement)
   {
-    int64 message_size = HIST_MSG_MAXSZ + VARSIZE_ANY_EXHDR(commandText) + VARSIZE_ANY_EXHDR(scheduleText);
-    char *hist_message = (char *) malloc(message_size * sizeof(char));
-    snprintf(hist_message, message_size, HIST_MSG_CRON_SCHEDULED, schedule, command);
-    AddJobHistory(jobId, hist_message, false);
+    RecordJobScheduled(jobId, command, schedule);
   }
 
 	InvalidateJobCache();
@@ -379,10 +376,7 @@ cron_unschedule(PG_FUNCTION_ARGS)
     text* commandText = (text *) DatumGetPointer(heap_getattr(heapTuple, Anum_cron_job_command,
                   tupleDescriptor, &isNull));
     char* command = text_to_cstring(commandText);
-    int64 message_size = HIST_MSG_MAXSZ + VARSIZE_ANY_EXHDR(commandText);
-    char *hist_message = (char *) malloc(message_size * sizeof(char));
-    snprintf(hist_message, message_size, HIST_MSG_CRON_UNSCHEDULED, command);
-    AddJobHistory(jobId, hist_message, false);
+    RecordJobUnscheduled(jobId, command);
   }
 
 	simple_heap_delete(cronJobsTable, &heapTuple->t_self);
