@@ -32,7 +32,6 @@
 #include "utils/syscache.h"
 
 #include "executor/spi.h"
-#include "lib/stringinfo.h"
 #include "utils/snapmgr.h"
 
 #define HIST_TABLE_NAME "history"
@@ -60,6 +59,40 @@ void RecordJobScheduled(int64 jobId, const char *command, const char *schedule)
   values[0] = Int64GetDatum(jobId);
   values[1] = CStringGetTextDatum(command);
   values[2] = CStringGetTextDatum(schedule);
+
+  SPI_connect();
+  ret = SPI_execute_with_args(insert,
+      nargs, argtypes, values,
+      NULL, false, 0);
+  if (ret != SPI_OK_INSERT)
+  {
+    ereport(ERROR, (errmsg("pg_cron history record entry failed, SPI error code %d", ret)));
+  }
+  SPI_finish();
+}
+
+void RecordJobScheduledAt(int64 jobId, const char *command, const char *at)
+{
+  /* No new transaction, as we're already in one as part of cron.schedule() */
+  const char *insert_template = "INSERT INTO %s.%s (jobid, message) VALUES ($1, jsonb_build_object('event', 'scheduled-at', 'command', $2, 'at', $3));";
+  int nargs = 3;
+  Oid argtypes[nargs];
+  Datum values[nargs];
+  int ret;
+  int length = snprintf(NULL, 0, insert_template, CRON_SCHEMA_NAME, HIST_TABLE_NAME);
+  char *insert = palloc((length + 1) * sizeof(char));
+  snprintf(insert, length + 1, insert_template, CRON_SCHEMA_NAME, HIST_TABLE_NAME);
+
+  memset(argtypes, 0, sizeof(argtypes));
+  memset(values, 0, sizeof(values));
+
+  argtypes[0] = INT8OID;
+  argtypes[1] = TEXTOID;
+  argtypes[2] = TEXTOID;
+
+  values[0] = Int64GetDatum(jobId);
+  values[1] = CStringGetTextDatum(command);
+  values[2] = CStringGetTextDatum(at);
 
   SPI_connect();
   ret = SPI_execute_with_args(insert,
@@ -141,7 +174,6 @@ void RecordJobStarted(int64 jobId, const char *command)
   PopActiveSnapshot();
   CommitTransactionCommand();
 }
-
 
 void RecordJobCompletedStatus(int64 jobId, const char *command, const char *commandStatus, const char *tupleCount)
 {

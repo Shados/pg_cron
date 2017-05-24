@@ -18,6 +18,7 @@
 #include "job_metadata.h"
 #include "cron_job.h"
 #include "pg_cron_utility.h"
+#include "task_states.h"
 
 #include "access/genam.h"
 #include "access/heapam.h"
@@ -28,6 +29,7 @@
 #include "catalog/pg_extension.h"
 #include "catalog/indexing.h"
 #include "catalog/namespace.h"
+#include "catalog/pg_type.h"
 #include "commands/extension.h"
 #include "commands/sequence.h"
 #include "commands/trigger.h"
@@ -44,8 +46,10 @@
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 
+#include "executor/spi.h"
 
 #define JOBS_TABLE_NAME "job"
+#define AT_TABLE_NAME "at"
 #define JOB_ID_INDEX_NAME "job_pkey"
 #define JOB_ID_SEQUENCE_NAME "cron.jobid_seq"
 
@@ -67,6 +71,7 @@ static bool PgCronHasBeenLoaded(void);
 PG_FUNCTION_INFO_V1(cron_schedule);
 PG_FUNCTION_INFO_V1(cron_unschedule);
 PG_FUNCTION_INFO_V1(cron_job_cache_invalidate);
+PG_FUNCTION_INFO_V1(cron_at);
 
 
 /* global variables */
@@ -388,6 +393,74 @@ cron_unschedule(PG_FUNCTION_ARGS)
 	InvalidateJobCache();
 
 	PG_RETURN_BOOL(true);
+}
+
+
+/*
+ * cron_at schedules a cron job to run once at a specific time.
+ */
+Datum
+cron_at(PG_FUNCTION_ARGS)
+{
+  TimestampTz at = PG_GETARG_TIMESTAMPTZ(0);
+	text *commandText = PG_GETARG_TEXT_P(1);
+
+	char *command = text_to_cstring(commandText);
+
+	int64 atId = 0;
+	Datum atIdDatum = 0;
+
+	Oid cronSchemaId = InvalidOid;
+	Oid cronAtRelationId = InvalidOid;
+
+	Relation cronAtTable = NULL;
+	TupleDesc tupleDescriptor = NULL;
+	HeapTuple heapTuple = NULL;
+	Datum values[Natts_cron_at];
+	bool isNulls[Natts_cron_at];
+
+	Oid userId = GetUserId();
+	char *userName = GetUserNameFromId(userId, false);
+
+	/* form new at tuple */
+	memset(values, 0, sizeof(values));
+	memset(isNulls, false, sizeof(isNulls));
+
+	atId = NextJobId();
+	atIdDatum = Int64GetDatum(atId);
+
+	values[Anum_cron_at_atid - 1] = atIdDatum;
+	values[Anum_cron_at_timestamp - 1] = TimestampTzGetDatum(at);
+	values[Anum_cron_at_command - 1] = CStringGetTextDatum(command);
+	values[Anum_cron_at_nodename - 1] = CStringGetTextDatum("localhost");
+	values[Anum_cron_at_nodeport - 1] = Int32GetDatum(PostPortNumber);
+	values[Anum_cron_at_database - 1] = CStringGetTextDatum(CronTableDatabaseName);
+	values[Anum_cron_at_username - 1] = CStringGetTextDatum(userName);
+
+	cronSchemaId = get_namespace_oid(CRON_SCHEMA_NAME, false);
+	cronAtRelationId = get_relname_relid(AT_TABLE_NAME, cronSchemaId);
+
+	/* open at relation and insert new tuple */
+	cronAtTable = heap_open(cronAtRelationId, RowExclusiveLock);
+
+	tupleDescriptor = RelationGetDescr(cronAtTable);
+	heapTuple = heap_form_tuple(tupleDescriptor, values, isNulls);
+
+	simple_heap_insert(cronAtTable, heapTuple);
+	CatalogUpdateIndexes(cronAtTable, heapTuple);
+	CommandCounterIncrement();
+
+	/* close relation, optionally record command, and invalidate previous cache entry */
+	heap_close(cronAtTable, RowExclusiveLock);
+
+  if (CronLogStatement)
+  {
+    RecordJobScheduledAt(atId, command, timestamptz_to_str(at));
+  }
+
+	/* InvalidateJobCache(); #<{(| TODO for ats? |)}># */
+
+	PG_RETURN_INT64(atId);
 }
 
 

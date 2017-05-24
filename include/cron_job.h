@@ -49,5 +49,14 @@ typedef FormData_cron_job *Form_cron_job;
 #define Anum_cron_job_database 6
 #define Anum_cron_job_username 7
 
+#define Natts_cron_at 7
+#define Anum_cron_at_atid 1
+#define Anum_cron_at_timestamp 2
+#define Anum_cron_at_command 3
+#define Anum_cron_at_nodename 4
+#define Anum_cron_at_nodeport 5
+#define Anum_cron_at_database 6
+#define Anum_cron_at_username 7
+
 
 #endif /* CRON_JOB_H */

@@ -25,16 +25,31 @@ CREATE TABLE cron.job (
 	database text not null default current_database(),
 	username text not null default current_user
 );
+CREATE TABLE cron.at (
+  atid bigint primary key default nextval('cron.jobid_seq'),
+  at timestamp with time zone not null,
+  command text not null,
+  nodename text not null default 'localhost',
+  nodeport int not null default inet_server_port(),
+  database text not null default current_database(),
+  username text not null default current_user
+);
 CREATE TABLE cron.history (
   histid bigint primary key default nextval('cron.histid_seq'),
   jobid bigint not null,
   message jsonb not null,
   created_at timestamp with time zone not null default NOW()
 );
+CREATE INDEX ON cron.history USING GIN(message);
+
 
 GRANT SELECT ON cron.job TO public;
 ALTER TABLE cron.job ENABLE ROW LEVEL SECURITY;
 CREATE POLICY cron_job_policy ON cron.job USING (username = current_user);
+
+GRANT SELECT ON cron.at TO public;
+ALTER TABLE cron.at ENABLE ROW LEVEL SECURITY;
+CREATE POLICY cron_at_policy ON cron.at USING (username = current_user);
 
 GRANT SELECT ON cron.history TO public;
 
@@ -63,3 +78,10 @@ CREATE TRIGGER cron_job_cache_invalidate
     AFTER INSERT OR UPDATE OR DELETE OR TRUNCATE
     ON cron.job
     FOR STATEMENT EXECUTE PROCEDURE cron.job_cache_invalidate();
+
+CREATE FUNCTION cron.at(at timestamp with time zone, command text)
+    RETURNS bigint
+    LANGUAGE C STRICT
+    AS 'MODULE_PATHNAME', $$cron_at$$;
+COMMENT ON FUNCTION cron.at(timestamp with time zone, text)
+    IS 'schedule a pg_cron job to run once at a specific date/time';

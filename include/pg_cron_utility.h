@@ -27,6 +27,7 @@
 
 /* utility functions */
 extern void RecordJobScheduled(int64 jobId, const char *command, const char *schedule);
+extern void RecordJobScheduledAt(int64 jobId, const char *command, const char *at);
 extern void RecordJobUnscheduled(int64 jobId, const char *command);
 extern void RecordJobStarted(int64 jobId, const char *command);
 extern void RecordJobCompleted(int64 jobId, const char *command, int tupleCount);
