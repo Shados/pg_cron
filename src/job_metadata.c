@@ -56,14 +56,19 @@
 
 /* forward declarations */
 static HTAB * CreateCronJobHash(void);
+static HTAB * CreateAtJobHash(void);
 
 static int64 NextJobId(void);
 static Oid CronExtensionOwner(void);
-static void InvalidateJobCacheCallback(Datum argument, Oid relationId);
-static void InvalidateJobCache(void);
+static void InvalidateCronJobCacheCallback(Datum argument, Oid relationId);
+static void InvalidateCronJobCache(void);
+static void InvalidateAtJobCacheCallback(Datum argument, Oid relationId);
+static void InvalidateAtJobCache(void);
 static Oid CronJobRelationId(void);
+static Oid AtJobRelationId(void);
 
 static CronJob * TupleToCronJob(TupleDesc tupleDescriptor, HeapTuple heapTuple);
+static AtJob * TupleToAtJob(TupleDesc tupleDescriptor, HeapTuple heapTuple);
 static bool PgCronHasBeenLoaded(void);
 
 
@@ -71,25 +76,31 @@ static bool PgCronHasBeenLoaded(void);
 PG_FUNCTION_INFO_V1(cron_schedule);
 PG_FUNCTION_INFO_V1(cron_unschedule);
 PG_FUNCTION_INFO_V1(cron_job_cache_invalidate);
+PG_FUNCTION_INFO_V1(at_job_cache_invalidate);
 PG_FUNCTION_INFO_V1(cron_at);
+PG_FUNCTION_INFO_V1(cron_remove_at);
 
 
 /* global variables */
 static MemoryContext CronJobContext = NULL;
+static MemoryContext AtJobContext = NULL;
 static HTAB *CronJobHash = NULL;
+static HTAB *AtJobHash = NULL;
 static Oid CachedCronJobRelationId = InvalidOid;
+static Oid CachedAtJobRelationId = InvalidOid;
 bool CronJobCacheValid = false;
+bool AtJobCacheValid = false;
 
 
 /*
- * InitializeJobMetadataCache initializes the data structures for caching
- * job metadata.
+ * InitializeCronJobMetadataCache initializes the data structures for caching
+ * cron job metadata.
  */
 void
-InitializeJobMetadataCache(void)
+InitializeCronJobMetadataCache(void)
 {
 	/* watch for invalidation events */
-	CacheRegisterRelcacheCallback(InvalidateJobCacheCallback, (Datum) 0);
+	CacheRegisterRelcacheCallback(InvalidateCronJobCacheCallback, (Datum) 0);
 
 	CronJobContext = AllocSetContextCreate(CurrentMemoryContext,
 										   "pg_cron job context",
@@ -100,17 +111,49 @@ InitializeJobMetadataCache(void)
 	CronJobHash = CreateCronJobHash();
 }
 
+/*
+ * InitializeAtJobMetadataCache initializes the data structures for caching
+ * at job metadata.
+ */
+void
+InitializeAtJobMetadataCache(void)
+{
+	/* watch for invalidation events */
+	CacheRegisterRelcacheCallback(InvalidateAtJobCacheCallback, (Datum) 0);
+
+	AtJobContext = AllocSetContextCreate(CurrentMemoryContext,
+										   "pg_cron job context",
+										   ALLOCSET_DEFAULT_MINSIZE,
+										   ALLOCSET_DEFAULT_INITSIZE,
+										   ALLOCSET_DEFAULT_MAXSIZE);
+
+	AtJobHash = CreateAtJobHash();
+}
+
 
 /*
- * ResetJobMetadataCache resets the job metadata cache to its initial
+ * ResetCronJobMetadataCache resets the cron job metadata cache to its initial
  * state.
  */
 void
-ResetJobMetadataCache(void)
+ResetCronJobMetadataCache(void)
 {
 	MemoryContextResetAndDeleteChildren(CronJobContext);
 
 	CronJobHash = CreateCronJobHash();
+}
+
+
+/*
+ * ResetAtJobMetadataCache resets the at job metadata cache to its initial
+ * state.
+ */
+void
+ResetAtJobMetadataCache(void)
+{
+	MemoryContextResetAndDeleteChildren(AtJobContext);
+
+	AtJobHash = CreateAtJobHash();
 }
 
 
@@ -138,6 +181,29 @@ CreateCronJobHash(void)
 
 
 /*
+ * CreateAtJobHash creates the hash for caching at job metadata.
+ */
+static HTAB *
+CreateAtJobHash(void)
+{
+	HTAB *taskHash = NULL;
+	HASHCTL info;
+	int hashFlags = 0;
+
+	memset(&info, 0, sizeof(info));
+	info.keysize = sizeof(int64);
+	info.entrysize = sizeof(AtJob);
+	info.hash = tag_hash;
+	info.hcxt = AtJobContext;
+	hashFlags = (HASH_ELEM | HASH_FUNCTION | HASH_CONTEXT);
+
+	taskHash = hash_create("pg_cron at jobs", 32, &info, hashFlags);
+
+	return taskHash;
+}
+
+
+/*
  * GetCronJob gets the cron job with the given id.
  */
 CronJob *
@@ -148,6 +214,22 @@ GetCronJob(int64 jobId)
 	bool isPresent = false;
 
 	job = hash_search(CronJobHash, &hashKey, HASH_FIND, &isPresent);
+
+	return job;
+}
+
+
+/*
+ * GetAtJob gets the at job with the given id.
+ */
+AtJob *
+GetAtJob(int64 jobId)
+{
+	AtJob *job = NULL;
+	int64 hashKey = jobId;
+	bool isPresent = false;
+
+	job = hash_search(AtJobHash, &hashKey, HASH_FIND, &isPresent);
 
 	return job;
 }
@@ -226,7 +308,7 @@ cron_schedule(PG_FUNCTION_ARGS)
     RecordJobScheduled(jobId, command, schedule);
   }
 
-	InvalidateJobCache();
+	InvalidateCronJobCache();
 
 	PG_RETURN_INT64(jobId);
 }
@@ -390,9 +472,40 @@ cron_unschedule(PG_FUNCTION_ARGS)
 	systable_endscan(scanDescriptor);
 	heap_close(cronJobsTable, RowExclusiveLock);
 
-	InvalidateJobCache();
+	InvalidateCronJobCache();
 
 	PG_RETURN_BOOL(true);
+}
+
+
+void
+RemoveAtJob(int64 jobId)
+{
+  int ret;
+  const char *delete_template = "DELETE FROM %s.%s "
+                                "WHERE atid = %d;";
+  int length = snprintf(NULL, 0, delete_template, CRON_SCHEMA_NAME, AT_TABLE_NAME, jobId);
+  char *delete = palloc((length + 1) * sizeof(char));
+  snprintf(delete, length + 1, delete_template, CRON_SCHEMA_NAME, AT_TABLE_NAME, jobId);
+
+  SetCurrentStatementStartTimestamp();
+  StartTransactionCommand();
+  SPI_connect();
+  PushActiveSnapshot(GetTransactionSnapshot());
+
+  ret = SPI_execute(delete, false, 0);
+  if (ret != SPI_OK_DELETE)
+  {
+    ereport(ERROR, (errmsg("pg_cron at job deletion failed, SPI error code %d", ret)));
+  }
+  else
+  {
+    ereport(LOG, (errmsg("pg_cron at job cleaned up: %ld", jobId)));
+  }
+
+  SPI_finish();
+  PopActiveSnapshot();
+  CommitTransactionCommand();
 }
 
 
@@ -407,8 +520,8 @@ cron_at(PG_FUNCTION_ARGS)
 
 	char *command = text_to_cstring(commandText);
 
-	int64 atId = 0;
-	Datum atIdDatum = 0;
+	int64 jobId = 0;
+	Datum jobIdDatum = 0;
 
 	Oid cronSchemaId = InvalidOid;
 	Oid cronAtRelationId = InvalidOid;
@@ -416,8 +529,8 @@ cron_at(PG_FUNCTION_ARGS)
 	Relation cronAtTable = NULL;
 	TupleDesc tupleDescriptor = NULL;
 	HeapTuple heapTuple = NULL;
-	Datum values[Natts_cron_at];
-	bool isNulls[Natts_cron_at];
+	Datum values[Natts_at_job];
+	bool isNulls[Natts_at_job];
 
 	Oid userId = GetUserId();
 	char *userName = GetUserNameFromId(userId, false);
@@ -426,16 +539,16 @@ cron_at(PG_FUNCTION_ARGS)
 	memset(values, 0, sizeof(values));
 	memset(isNulls, false, sizeof(isNulls));
 
-	atId = NextJobId();
-	atIdDatum = Int64GetDatum(atId);
+	jobId = NextJobId();
+	jobIdDatum = Int64GetDatum(jobId);
 
-	values[Anum_cron_at_atid - 1] = atIdDatum;
-	values[Anum_cron_at_timestamp - 1] = TimestampTzGetDatum(at);
-	values[Anum_cron_at_command - 1] = CStringGetTextDatum(command);
-	values[Anum_cron_at_nodename - 1] = CStringGetTextDatum("localhost");
-	values[Anum_cron_at_nodeport - 1] = Int32GetDatum(PostPortNumber);
-	values[Anum_cron_at_database - 1] = CStringGetTextDatum(CronTableDatabaseName);
-	values[Anum_cron_at_username - 1] = CStringGetTextDatum(userName);
+	values[Anum_at_job_jobid - 1] = jobIdDatum;
+	values[Anum_at_job_timestamp - 1] = TimestampTzGetDatum(at);
+	values[Anum_at_job_command - 1] = CStringGetTextDatum(command);
+	values[Anum_at_job_nodename - 1] = CStringGetTextDatum("localhost");
+	values[Anum_at_job_nodeport - 1] = Int32GetDatum(PostPortNumber);
+	values[Anum_at_job_database - 1] = CStringGetTextDatum(CronTableDatabaseName);
+	values[Anum_at_job_username - 1] = CStringGetTextDatum(userName);
 
 	cronSchemaId = get_namespace_oid(CRON_SCHEMA_NAME, false);
 	cronAtRelationId = get_relname_relid(AT_TABLE_NAME, cronSchemaId);
@@ -455,12 +568,12 @@ cron_at(PG_FUNCTION_ARGS)
 
   if (CronLogStatement)
   {
-    RecordJobScheduledAt(atId, command, timestamptz_to_str(at));
+    RecordJobScheduledAt(jobId, command, timestamptz_to_str(at));
   }
 
-	/* InvalidateJobCache(); #<{(| TODO for ats? |)}># */
+	InvalidateAtJobCache();
 
-	PG_RETURN_INT64(atId);
+	PG_RETURN_INT64(jobId);
 }
 
 
@@ -477,7 +590,26 @@ cron_job_cache_invalidate(PG_FUNCTION_ARGS)
 						errmsg("must be called as trigger")));
 	}
 
-	InvalidateJobCache();
+	InvalidateCronJobCache();
+
+	PG_RETURN_DATUM(PointerGetDatum(NULL));
+}
+
+
+/*
+ * at_job_cache_invalidate invalidates the at job cache in response to
+ * a trigger.
+ */
+Datum
+at_job_cache_invalidate(PG_FUNCTION_ARGS)
+{
+	if (!CALLED_AS_TRIGGER(fcinfo))
+	{
+		ereport(ERROR, (errcode(ERRCODE_E_R_I_E_TRIGGER_PROTOCOL_VIOLATED),
+						errmsg("must be called as trigger")));
+	}
+
+	InvalidateAtJobCache();
 
 	PG_RETURN_DATUM(PointerGetDatum(NULL));
 }
@@ -488,7 +620,7 @@ cron_job_cache_invalidate(PG_FUNCTION_ARGS)
  * iteration of pg_cron.
  */
 static void
-InvalidateJobCache(void)
+InvalidateCronJobCache(void)
 {
 	HeapTuple classTuple = NULL;
 
@@ -502,17 +634,51 @@ InvalidateJobCache(void)
 
 
 /*
- * InvalidateJobCacheCallback invalidates the job cache in response to
+ * Invalidate at job cache ensures the job cache is reloaded on the next
+ * iteration of pg_cron.
+ */
+static void
+InvalidateAtJobCache(void)
+{
+	HeapTuple classTuple = NULL;
+
+	classTuple = SearchSysCache1(RELOID, ObjectIdGetDatum(AtJobRelationId()));
+	if (HeapTupleIsValid(classTuple))
+	{
+		CacheInvalidateRelcacheByTuple(classTuple);
+		ReleaseSysCache(classTuple);
+	}
+}
+
+
+/*
+ * InvalidateCronJobCacheCallback invalidates the cron job cache in response to
  * an invalidation event.
  */
 static void
-InvalidateJobCacheCallback(Datum argument, Oid relationId)
+InvalidateCronJobCacheCallback(Datum argument, Oid relationId)
 {
 	if (relationId == CachedCronJobRelationId ||
 		CachedCronJobRelationId == InvalidOid)
 	{
 		CronJobCacheValid = false;
 		CachedCronJobRelationId = InvalidOid;
+	}
+}
+
+
+/*
+ * InvalidateAtJobCacheCallback invalidates the job cache in response to
+ * an invalidation event.
+ */
+static void
+InvalidateAtJobCacheCallback(Datum argument, Oid relationId)
+{
+	if (relationId == CachedAtJobRelationId ||
+		CachedAtJobRelationId == InvalidOid)
+	{
+		AtJobCacheValid = false;
+		CachedAtJobRelationId = InvalidOid;
 	}
 }
 
@@ -531,6 +697,23 @@ CronJobRelationId(void)
 	}
 
 	return CachedCronJobRelationId;
+}
+
+
+/*
+ * CachedAtJobRelationId returns a cached oid of the cron.job relation.
+ */
+static Oid
+AtJobRelationId(void)
+{
+	if (CachedAtJobRelationId == InvalidOid)
+	{
+		Oid cronSchemaId = get_namespace_oid(CRON_SCHEMA_NAME, false);
+
+		CachedAtJobRelationId = get_relname_relid(AT_TABLE_NAME, cronSchemaId);
+	}
+
+	return CachedAtJobRelationId;
 }
 
 
@@ -586,7 +769,7 @@ LoadCronJobList(void)
 		oldContext = MemoryContextSwitchTo(CronJobContext);
 
 		job = TupleToCronJob(tupleDescriptor, heapTuple);
-		jobList = lappend(jobList, job);
+		jobList = lappend(jobList, &(job->jobId));
 
 		MemoryContextSwitchTo(oldContext);
 
@@ -595,6 +778,76 @@ LoadCronJobList(void)
 
 	systable_endscan(scanDescriptor);
 	heap_close(cronJobTable, AccessShareLock);
+
+	PopActiveSnapshot();
+	CommitTransactionCommand();
+	pgstat_report_activity(STATE_IDLE, NULL);
+
+	return jobList;
+}
+
+
+/*
+ * LoadAtJobList loads the current list of jobs from the
+ * cron.at table and adds each job to the AtJobHash.
+ */
+List *
+LoadAtJobList(void)
+{
+	List *jobList = NIL;
+
+	Relation atJobTable = NULL;
+
+	SysScanDesc scanDescriptor = NULL;
+	ScanKeyData scanKey[1];
+	int scanKeyCount = 0;
+	HeapTuple heapTuple = NULL;
+	TupleDesc tupleDescriptor = NULL;
+
+	SetCurrentStatementStartTimestamp();
+	StartTransactionCommand();
+	PushActiveSnapshot(GetTransactionSnapshot());
+
+	/*
+	 * If the pg_cron extension has not been created yet or
+	 * we are on a hot standby, the job table is treated as
+	 * being empty.
+	 */
+	if (!PgCronHasBeenLoaded() || RecoveryInProgress())
+	{
+		PopActiveSnapshot();
+		CommitTransactionCommand();
+		pgstat_report_activity(STATE_IDLE, NULL);
+
+		return NIL;
+	}
+
+	atJobTable = heap_open(AtJobRelationId(), AccessShareLock);
+
+	scanDescriptor = systable_beginscan(atJobTable,
+										InvalidOid, false,
+										NULL, scanKeyCount, scanKey);
+
+	tupleDescriptor = RelationGetDescr(atJobTable);
+
+	heapTuple = systable_getnext(scanDescriptor);
+	while (HeapTupleIsValid(heapTuple))
+	{
+		MemoryContext oldContext = NULL;
+		AtJob *job = NULL;
+
+		oldContext = MemoryContextSwitchTo(AtJobContext);
+
+		job = TupleToAtJob(tupleDescriptor, heapTuple);
+		jobList = lappend(jobList, &(job->jobId));
+
+		MemoryContextSwitchTo(oldContext);
+
+		heapTuple = systable_getnext(scanDescriptor);
+	}
+
+	systable_endscan(scanDescriptor);
+	heap_close(atJobTable, AccessShareLock);
 
 	PopActiveSnapshot();
 	CommitTransactionCommand();
@@ -661,6 +914,52 @@ TupleToCronJob(TupleDesc tupleDescriptor, HeapTuple heapTuple)
 		/* a zeroed out schedule never runs */
 		memset(&job->schedule, 0, sizeof(entry));
 	}
+
+	return job;
+}
+
+
+/*
+ * TupleToAtJob takes a heap tuple and converts it into a AtJob
+ * struct.
+ */
+static AtJob *
+TupleToAtJob(TupleDesc tupleDescriptor, HeapTuple heapTuple)
+{
+	AtJob *job = NULL;
+	int64 jobKey = 0;
+	bool isNull = false;
+	bool isPresent = false;
+
+	Datum jobId = heap_getattr(heapTuple, Anum_at_job_jobid,
+							   tupleDescriptor, &isNull);
+	Datum timestamp = heap_getattr(heapTuple, Anum_at_job_timestamp,
+								  tupleDescriptor, &isNull);
+	Datum command = heap_getattr(heapTuple, Anum_at_job_command,
+								 tupleDescriptor, &isNull);
+	Datum nodeName = heap_getattr(heapTuple, Anum_at_job_nodename,
+								  tupleDescriptor, &isNull);
+	Datum nodePort = heap_getattr(heapTuple, Anum_at_job_nodeport,
+								  tupleDescriptor, &isNull);
+	Datum database = heap_getattr(heapTuple, Anum_at_job_database,
+								  tupleDescriptor, &isNull);
+	Datum userName = heap_getattr(heapTuple, Anum_at_job_username,
+								  tupleDescriptor, &isNull);
+
+	Assert(!HeapTupleHasNulls(heapTuple));
+
+	jobKey = DatumGetUInt32(jobId);
+	job = hash_search(AtJobHash, &jobKey, HASH_ENTER, &isPresent);
+
+	job->jobId = DatumGetUInt32(jobId);
+	job->timestamp = DatumGetTimestampTz(timestamp);
+	job->command = TextDatumGetCString(command);
+	job->nodeName = TextDatumGetCString(nodeName);
+	job->nodePort = DatumGetUInt32(nodePort);
+	job->userName = TextDatumGetCString(userName);
+	job->database = TextDatumGetCString(database);
+
+  /* Ignore old at jobs here? TODO */
 
 	return job;
 }

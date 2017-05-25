@@ -40,7 +40,7 @@
 void RecordJobScheduled(int64 jobId, const char *command, const char *schedule)
 {
   /* No new transaction, as we're already in one as part of cron.schedule() */
-  const char *insert_template = "INSERT INTO %s.%s (jobid, message) VALUES ($1, jsonb_build_object('event', 'scheduled', 'command', $2, 'schedule', $3));";
+  const char *insert_template = "INSERT INTO %s.%s (jobid, message) VALUES ($1, jsonb_build_object('type', 'cron', 'event', 'scheduled', 'command', $2, 'schedule', $3));";
   int nargs = 3;
   Oid argtypes[nargs];
   Datum values[nargs];
@@ -74,7 +74,7 @@ void RecordJobScheduled(int64 jobId, const char *command, const char *schedule)
 void RecordJobScheduledAt(int64 jobId, const char *command, const char *at)
 {
   /* No new transaction, as we're already in one as part of cron.schedule() */
-  const char *insert_template = "INSERT INTO %s.%s (jobid, message) VALUES ($1, jsonb_build_object('event', 'scheduled-at', 'command', $2, 'at', $3));";
+  const char *insert_template = "INSERT INTO %s.%s (jobid, message) VALUES ($1, jsonb_build_object('type', 'at', 'event', 'scheduled', 'command', $2, 'at', $3));";
   int nargs = 3;
   Oid argtypes[nargs];
   Datum values[nargs];
@@ -109,7 +109,7 @@ void RecordJobUnscheduled(int64 jobId, const char *command)
 {
   /* No new transaction, as we're already in one as part of cron.schedule() */
   const char *insert_template = "INSERT INTO %s.%s (jobid, message) "
-                                "VALUES ($1, jsonb_build_object('event', 'unscheduled', 'command', $2))";
+                                "VALUES ($1, jsonb_build_object('type', 'cron', 'event', 'unscheduled', 'command', $2))";
   int nargs = 2;
   Oid argtypes[nargs];
   Datum values[nargs];
@@ -138,10 +138,10 @@ void RecordJobUnscheduled(int64 jobId, const char *command)
   SPI_finish();
 }
 
-void RecordJobStarted(int64 jobId, const char *command)
+void RecordJobStarted(int64 jobId, const char *type, const char *command)
 {
-  const char *insert_template = "INSERT INTO %s.%s (jobid, message) VALUES ($1, jsonb_build_object('event', 'started', 'command', $2));";
-  int nargs = 2;
+  const char *insert_template = "INSERT INTO %s.%s (jobid, message) VALUES ($1, jsonb_build_object('type', $2, 'event', 'started', 'command', $3));";
+  int nargs = 3;
   Oid argtypes[nargs];
   Datum values[nargs];
   int ret;
@@ -155,9 +155,11 @@ void RecordJobStarted(int64 jobId, const char *command)
 
   argtypes[0] = INT8OID;
   argtypes[1] = TEXTOID;
+  argtypes[2] = TEXTOID;
 
   values[0] = Int64GetDatum(jobId);
-  values[1] = CStringGetTextDatum(command);
+  values[1] = CStringGetTextDatum(type);
+  values[2] = CStringGetTextDatum(command);
 
   SetCurrentStatementStartTimestamp();
   StartTransactionCommand();
@@ -175,11 +177,11 @@ void RecordJobStarted(int64 jobId, const char *command)
   CommitTransactionCommand();
 }
 
-void RecordJobCompletedStatus(int64 jobId, const char *command, const char *commandStatus, const char *tupleCount)
+void RecordJobCompletedStatus(int64 jobId, const char *type, const char *command, const char *commandStatus, const char *tupleCount)
 {
   const char *insert_template = "INSERT INTO %s.%s (jobid, message) "
-                                "VALUES ($1, jsonb_build_object('event', 'completed', 'command', $2, 'command_status', $3, 'tuple_count', $4))";
-  int nargs = 4;
+                                "VALUES ($1, jsonb_build_object('type', $2, 'event', 'completed', 'command', $3, 'command_status', $4, 'tuple_count', $5))";
+  int nargs = 5;
   Oid argtypes[nargs];
   Datum values[nargs];
   int ret;
@@ -195,11 +197,13 @@ void RecordJobCompletedStatus(int64 jobId, const char *command, const char *comm
   argtypes[1] = TEXTOID;
   argtypes[2] = TEXTOID;
   argtypes[3] = TEXTOID;
+  argtypes[4] = TEXTOID;
 
   values[0] = Int64GetDatum(jobId);
-  values[1] = CStringGetTextDatum(command);
-  values[2] = CStringGetTextDatum(commandStatus);
-  values[3] = CStringGetTextDatum(tupleCount);
+  values[1] = CStringGetTextDatum(type);
+  values[2] = CStringGetTextDatum(command);
+  values[3] = CStringGetTextDatum(commandStatus);
+  values[4] = CStringGetTextDatum(tupleCount);
 
   SetCurrentStatementStartTimestamp();
   StartTransactionCommand();
@@ -218,11 +222,11 @@ void RecordJobCompletedStatus(int64 jobId, const char *command, const char *comm
 }
 
 
-void RecordJobCompleted(int64 jobId, const char *command, int tupleCount)
+void RecordJobCompleted(int64 jobId, const char *type, const char *command, int tupleCount)
 {
   const char *insert_template = "INSERT INTO %s.%s (jobid, message) "
-                                "VALUES ($1, jsonb_build_object('event', 'completed', 'command', $2, 'tuple_count', $3))";
-  int nargs = 3;
+                                "VALUES ($1, jsonb_build_object('type', $2, 'event', 'completed', 'command', $3, 'tuple_count', $4))";
+  int nargs = 4;
   Oid argtypes[nargs];
   Datum values[nargs];
   int ret;
@@ -240,11 +244,13 @@ void RecordJobCompleted(int64 jobId, const char *command, int tupleCount)
   argtypes[0] = INT8OID;
   argtypes[1] = TEXTOID;
   argtypes[2] = TEXTOID;
+  argtypes[3] = TEXTOID;
 
 
   values[0] = Int64GetDatum(jobId);
-  values[1] = CStringGetTextDatum(command);
-  values[2] = CStringGetTextDatum(tupleStr);
+  values[1] = CStringGetTextDatum(type);
+  values[2] = CStringGetTextDatum(command);
+  values[3] = CStringGetTextDatum(tupleStr);
 
   SetCurrentStatementStartTimestamp();
   StartTransactionCommand();
@@ -263,54 +269,15 @@ void RecordJobCompleted(int64 jobId, const char *command, int tupleCount)
 }
 
 
-void RecordJobFailed(int64 jobId, const char *command)
+void RecordJobFailed(int64 jobId, const char *type, const char *command)
 {
   const char *insert_template = "INSERT INTO %s.%s (jobid, message) "
-                                "VALUES ($1, jsonb_build_object('event', 'failed', 'command', $2))";
-  int nargs = 2;
-  Oid argtypes[nargs];
-  Datum values[nargs];
-  int ret;
-
-  int length = snprintf(NULL, 0, insert_template, CRON_SCHEMA_NAME, HIST_TABLE_NAME);
-  char *insert = palloc((length + 1) * sizeof(char));
-  snprintf(insert, length + 1, insert_template, CRON_SCHEMA_NAME, HIST_TABLE_NAME);
-
-  memset(argtypes, 0, sizeof(argtypes));
-  memset(values, 0, sizeof(values));
-
-  argtypes[0] = INT8OID;
-  argtypes[1] = TEXTOID;
-
-
-  values[0] = Int64GetDatum(jobId);
-  values[1] = CStringGetTextDatum(command);
-
-  SetCurrentStatementStartTimestamp();
-  StartTransactionCommand();
-  SPI_connect();
-  PushActiveSnapshot(GetTransactionSnapshot());
-  ret = SPI_execute_with_args(insert,
-      nargs, argtypes, values,
-      NULL, false, 0);
-  if (ret != SPI_OK_INSERT)
-  {
-    ereport(ERROR, (errmsg("pg_cron history record entry failed, SPI error code %d", ret)));
-  }
-  SPI_finish();
-  PopActiveSnapshot();
-  CommitTransactionCommand();
-}
-
-
-void RecordJobFailedMessage(int64 jobId, const char *command, const char *message)
-{
-  const char *insert_template = "INSERT INTO %s.%s (jobid, message) "
-                                "VALUES ($1, jsonb_build_object('event', 'failed', 'command', $2, 'message', $3))";
+                                "VALUES ($1, jsonb_build_object('type', $2, 'event', 'failed', 'command', $3))";
   int nargs = 3;
   Oid argtypes[nargs];
   Datum values[nargs];
   int ret;
+
   int length = snprintf(NULL, 0, insert_template, CRON_SCHEMA_NAME, HIST_TABLE_NAME);
   char *insert = palloc((length + 1) * sizeof(char));
   snprintf(insert, length + 1, insert_template, CRON_SCHEMA_NAME, HIST_TABLE_NAME);
@@ -324,8 +291,51 @@ void RecordJobFailedMessage(int64 jobId, const char *command, const char *messag
 
 
   values[0] = Int64GetDatum(jobId);
-  values[1] = CStringGetTextDatum(command);
-  values[2] = CStringGetTextDatum(message);
+  values[1] = CStringGetTextDatum(type);
+  values[2] = CStringGetTextDatum(command);
+
+  SetCurrentStatementStartTimestamp();
+  StartTransactionCommand();
+  SPI_connect();
+  PushActiveSnapshot(GetTransactionSnapshot());
+  ret = SPI_execute_with_args(insert,
+      nargs, argtypes, values,
+      NULL, false, 0);
+  if (ret != SPI_OK_INSERT)
+  {
+    ereport(ERROR, (errmsg("pg_cron history record entry failed, SPI error code %d", ret)));
+  }
+  SPI_finish();
+  PopActiveSnapshot();
+  CommitTransactionCommand();
+}
+
+
+void RecordJobFailedMessage(int64 jobId, const char *type, const char *command, const char *message)
+{
+  const char *insert_template = "INSERT INTO %s.%s (jobid, message) "
+                                "VALUES ($1, jsonb_build_object('type', $2, 'event', 'failed', 'command', $3, 'message', $4))";
+  int nargs = 4;
+  Oid argtypes[nargs];
+  Datum values[nargs];
+  int ret;
+  int length = snprintf(NULL, 0, insert_template, CRON_SCHEMA_NAME, HIST_TABLE_NAME);
+  char *insert = palloc((length + 1) * sizeof(char));
+  snprintf(insert, length + 1, insert_template, CRON_SCHEMA_NAME, HIST_TABLE_NAME);
+
+  memset(argtypes, 0, sizeof(argtypes));
+  memset(values, 0, sizeof(values));
+
+  argtypes[0] = INT8OID;
+  argtypes[1] = TEXTOID;
+  argtypes[2] = TEXTOID;
+  argtypes[3] = TEXTOID;
+
+
+  values[0] = Int64GetDatum(jobId);
+  values[1] = CStringGetTextDatum(type);
+  values[2] = CStringGetTextDatum(command);
+  values[3] = CStringGetTextDatum(message);
 
   SetCurrentStatementStartTimestamp();
   StartTransactionCommand();

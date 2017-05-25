@@ -85,3 +85,15 @@ CREATE FUNCTION cron.at(at timestamp with time zone, command text)
     AS 'MODULE_PATHNAME', $$cron_at$$;
 COMMENT ON FUNCTION cron.at(timestamp with time zone, text)
     IS 'schedule a pg_cron job to run once at a specific date/time';
+
+CREATE FUNCTION cron.at_job_cache_invalidate()
+    RETURNS trigger
+    LANGUAGE C
+    AS 'MODULE_PATHNAME', $$at_job_cache_invalidate$$;
+COMMENT ON FUNCTION cron.at_job_cache_invalidate()
+    IS 'invalidate at job cache';
+
+CREATE TRIGGER at_job_cache_invalidate
+    AFTER INSERT OR UPDATE OR DELETE OR TRUNCATE
+    ON cron.at
+    FOR STATEMENT EXECUTE PROCEDURE cron.at_job_cache_invalidate();

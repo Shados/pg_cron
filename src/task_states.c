@@ -82,7 +82,8 @@ RefreshTaskHash(void)
 	CronTask *task = NULL;
 	HASH_SEQ_STATUS status;
 
-	ResetJobMetadataCache();
+	ResetCronJobMetadataCache();
+	ResetAtJobMetadataCache();
 
 	hash_seq_init(&status, CronTaskHash);
 
@@ -92,18 +93,19 @@ RefreshTaskHash(void)
 		task->isActive = false;
 	}
 
-	jobList = LoadCronJobList();
+	jobList = list_concat(LoadCronJobList(), LoadAtJobList());
 
 	/* mark tasks that still have a job as active */
 	foreach(jobCell, jobList)
 	{
-		CronJob *job = (CronJob *) lfirst(jobCell);
+		int64 *jobId = (int64 *) lfirst(jobCell);
 
-		CronTask *task = GetCronTask(job->jobId);
+		CronTask *task = GetCronTask(*jobId);
 		task->isActive = true;
 	}
 
 	CronJobCacheValid = true;
+	AtJobCacheValid = true;
 }
 
 

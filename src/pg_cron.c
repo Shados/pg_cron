@@ -222,7 +222,8 @@ PgCronWorkerMain(Datum arg)
 											ALLOCSET_DEFAULT_INITSIZE,
 											ALLOCSET_DEFAULT_MAXSIZE);
 
-	InitializeJobMetadataCache();
+	InitializeCronJobMetadataCache();
+	InitializeAtJobMetadataCache();
 	InitializeTaskStateHash();
 
 	ereport(LOG, (errmsg("pg_cron scheduler started")));
@@ -279,12 +280,15 @@ StartAllPendingRuns(List *taskList, TimestampTz currentTime)
 		{
 			CronTask *task = (CronTask *) lfirst(taskCell);
 			CronJob *cronJob = GetCronJob(task->jobId);
-			entry *schedule = &cronJob->schedule;
+      if (cronJob != NULL)
+      {
+        entry *schedule = &cronJob->schedule;
 
-			if (schedule->flags & WHEN_REBOOT)
-			{
-				task->pendingRunCount += 1;
-			}
+        if (schedule->flags & WHEN_REBOOT)
+        {
+          task->pendingRunCount += 1;
+        }
+      }
 		}
 
 		RebootJobsScheduled = true;
@@ -358,100 +362,123 @@ StartPendingRuns(CronTask *task, ClockProgress clockProgress,
 				 TimestampTz lastMinute, TimestampTz currentTime)
 {
 	CronJob *cronJob = GetCronJob(task->jobId);
-	entry *schedule = &cronJob->schedule;
+  AtJob *atJob = GetAtJob(task->jobId);
 	TimestampTz virtualTime = lastMinute;
 	TimestampTz currentMinute = TimestampMinuteStart(currentTime);
 
 
-	switch (clockProgress)
-	{
-		case CLOCK_PROGRESSED:
-		{
-			/*
-			 * case 1: minutesPassed is a small positive number
-			 * run jobs for each virtual minute until caught up.
-			 */
 
-			do
-			{
-				virtualTime = TimestampTzPlusMilliseconds(virtualTime,
-														  60*1000);
+  if (atJob != NULL)
+  {
+    TimestampTz atTime = atJob->timestamp;
+    do
+    {
+      /* check if virtualTime > at timestamp, if so flag it as needing a run */
+      long secs = 0;
+      int microsecs = 0;
+      virtualTime = TimestampTzPlusMilliseconds(virtualTime, 60*1000);
+      TimestampDifference(virtualTime, atTime, &secs, &microsecs);
+      if (secs == 0 && microsecs == 0 && task->isActive)
+      {
+        task->pendingRunCount = 1;
+      }
+    }
+    while (virtualTime < currentMinute);
+  }
 
-				if (ShouldRunTask(schedule, virtualTime, true, true))
-				{
-					task->pendingRunCount += 1;
-				}
-			}
-			while (virtualTime < currentMinute);
+  if (cronJob != NULL)
+  {
+    entry *schedule = &cronJob->schedule;
+    switch (clockProgress)
+    {
+      case CLOCK_PROGRESSED:
+      {
+        /*
+         * case 1: minutesPassed is a small positive number
+         * run jobs for each virtual minute until caught up.
+         */
 
-			break;
-		}
+        do
+        {
+          virtualTime = TimestampTzPlusMilliseconds(virtualTime,
+                                60*1000);
 
-		case CLOCK_JUMP_FORWARD:
-		{
-			/*
-			 * case 2: minutesPassed is a medium-sized positive number,
-			 * for example because we went to DST run wildcard
-			 * jobs once, then run any fixed-time jobs that would
-			 * otherwise be skipped if we use up our minute
-			 * (possible, if there are a lot of jobs to run) go
-			 * around the loop again so that wildcard jobs have
-			 * a chance to run, and we do our housekeeping
-			 */
+          if (ShouldRunTask(schedule, virtualTime, true, true))
+          {
+            task->pendingRunCount += 1;
+          }
+        }
+        while (virtualTime < currentMinute);
 
-			/* run fixed-time jobs for each minute missed */
-			do
-			{
-				virtualTime = TimestampTzPlusMilliseconds(virtualTime,
-														  60*1000);
+        break;
+      }
 
-				if (ShouldRunTask(schedule, virtualTime, false, true))
-				{
-					task->pendingRunCount += 1;
-				}
+      case CLOCK_JUMP_FORWARD:
+      {
+        /*
+         * case 2: minutesPassed is a medium-sized positive number,
+         * for example because we went to DST run wildcard
+         * jobs once, then run any fixed-time jobs that would
+         * otherwise be skipped if we use up our minute
+         * (possible, if there are a lot of jobs to run) go
+         * around the loop again so that wildcard jobs have
+         * a chance to run, and we do our housekeeping
+         */
 
-			} while (virtualTime < currentMinute);
+        /* run fixed-time jobs for each minute missed */
+        do
+        {
+          virtualTime = TimestampTzPlusMilliseconds(virtualTime,
+                                60*1000);
 
-			/* run wildcard jobs for current minute */
-			if (ShouldRunTask(schedule, currentMinute, true, false))
-			{
-				task->pendingRunCount += 1;
-			}
+          if (ShouldRunTask(schedule, virtualTime, false, true))
+          {
+            task->pendingRunCount += 1;
+          }
 
-			break;
-		}
+        } while (virtualTime < currentMinute);
 
-		case CLOCK_JUMP_BACKWARD:
-		{
-			/*
-			 * case 3: timeDiff is a small or medium-sized
-			 * negative num, eg. because of DST ending just run
-			 * the wildcard jobs. The fixed-time jobs probably
-			 * have already run, and should not be repeated
-			 * virtual time does not change until we are caught up
-			 */
+        /* run wildcard jobs for current minute */
+        if (ShouldRunTask(schedule, currentMinute, true, false))
+        {
+          task->pendingRunCount += 1;
+        }
 
-			if (ShouldRunTask(schedule, currentMinute, true, false))
-			{
-				task->pendingRunCount += 1;
-			}
+        break;
+      }
 
-			break;
-		}
+      case CLOCK_JUMP_BACKWARD:
+      {
+        /*
+         * case 3: timeDiff is a small or medium-sized
+         * negative num, eg. because of DST ending just run
+         * the wildcard jobs. The fixed-time jobs probably
+         * have already run, and should not be repeated
+         * virtual time does not change until we are caught up
+         */
 
-		default:
-		{
-			/*
-			 * other: time has changed a *lot*, skip over any
-			 * intermediate fixed-time jobs and go back to
-			 * normal operation.
-			 */
-			if (ShouldRunTask(schedule, currentMinute, true, true))
-			{
-				task->pendingRunCount += 1;
-			}
-		}
-	}
+        if (ShouldRunTask(schedule, currentMinute, true, false))
+        {
+          task->pendingRunCount += 1;
+        }
+
+        break;
+      }
+
+      default:
+      {
+        /*
+         * other: time has changed a *lot*, skip over any
+         * intermediate fixed-time jobs and go back to
+         * normal operation.
+         */
+        if (ShouldRunTask(schedule, currentMinute, true, true))
+        {
+          task->pendingRunCount += 1;
+        }
+      }
+    }
+  }
 }
 
 
@@ -749,8 +776,35 @@ ManageCronTask(CronTask *task, TimestampTz currentTime)
 	CronTaskState checkState = task->state;
 	int64 jobId = task->jobId;
 	CronJob *cronJob = GetCronJob(jobId);
+  AtJob *atJob = GetAtJob(jobId);
 	PGconn *connection = task->connection;
 	ConnStatusType connectionStatus = CONNECTION_BAD;
+
+  char *nodeName = NULL;
+  int nodePort = 0;
+  char *database = NULL;
+  char *userName = NULL;
+  char *command = NULL;
+  char *type = NULL;
+
+  if (cronJob != NULL)
+  {
+    nodeName = cronJob->nodeName;
+    nodePort = cronJob->nodePort;
+    database = cronJob->database;
+    userName = cronJob->userName;
+    command = cronJob->command;
+    type = "cron";
+  }
+  else
+  {
+    nodeName = atJob->nodeName;
+    nodePort = atJob->nodePort;
+    database = atJob->database;
+    userName = atJob->userName;
+    command = atJob->command;
+    type = "at";
+  }
 
 	switch (checkState)
 	{
@@ -791,26 +845,24 @@ ManageCronTask(CronTask *task, TimestampTz currentTime)
 				NULL
 			};
 			const char *valueArray[] = {
-				cronJob->nodeName,
+				nodeName,
 				nodePortString,
 				"pg_cron",
 				clientEncoding,
-				cronJob->database,
-				cronJob->userName,
+				database,
+				userName,
 				NULL
 			};
-			sprintf(nodePortString, "%d", cronJob->nodePort);
+			sprintf(nodePortString, "%d", nodePort);
 
 			Assert(sizeof(keywordArray) == sizeof(valueArray));
 
 			if (CronLogStatement)
 			{
-				char *command = cronJob->command;
+				ereport(LOG, (errmsg("pg_cron: %s job %ld starting: %s",
+									 type, jobId, command)));
 
-				ereport(LOG, (errmsg("cron job %ld starting: %s",
-									 jobId, command)));
-
-        RecordJobStarted(jobId, command);
+        RecordJobStarted(jobId, type, command);
 			}
 
 			connection = PQconnectStartParams(keywordArray, valueArray, false);
@@ -906,7 +958,6 @@ ManageCronTask(CronTask *task, TimestampTz currentTime)
 
 		case CRON_TASK_SENDING:
 		{
-			char *command = cronJob->command;
 			int sendResult = 0;
 
 			/* check if job has been removed */
@@ -1013,11 +1064,10 @@ ManageCronTask(CronTask *task, TimestampTz currentTime)
 							char *cmdStatus = PQcmdStatus(result);
 							char *cmdTuples = PQcmdTuples(result);
 
-							ereport(LOG, (errmsg("cron job %ld completed: %s %s",
-												 jobId, cmdStatus, cmdTuples)));
+							ereport(LOG, (errmsg("pg_cron: %s job %ld completed: %s %s",
+												 type, jobId, cmdStatus, cmdTuples)));
 
-              ereport(LOG, (errmsg("Adding history"))); /* DEBUG */
-              RecordJobCompletedStatus(jobId, cronJob->command, cmdStatus, cmdTuples);
+              RecordJobCompletedStatus(jobId, type, command, cmdStatus, cmdTuples);
 						}
 
 						break;
@@ -1061,12 +1111,12 @@ ManageCronTask(CronTask *task, TimestampTz currentTime)
 							char *rowString = ngettext("row", "rows",
 													   tupleCount);
 
-							ereport(LOG, (errmsg("cron job %ld completed: "
+							ereport(LOG, (errmsg("pg_cron: %s job %ld completed: "
 												 "%d %s",
-												 jobId, tupleCount,
+												 type, jobId, tupleCount,
 												 rowString)));
 
-              RecordJobCompleted(jobId, cronJob->command, tupleCount);
+              RecordJobCompleted(jobId, type, command, tupleCount);
 						}
 
 						break;
@@ -1102,16 +1152,16 @@ ManageCronTask(CronTask *task, TimestampTz currentTime)
 
 			if (task->errorMessage != NULL)
 			{
-				ereport(LOG, (errmsg("cron job %ld %s",
-									 jobId, task->errorMessage)));
+				ereport(LOG, (errmsg("pg_cron: %s job %ld %s",
+									 type, jobId, task->errorMessage)));
 
-        RecordJobFailedMessage(jobId, cronJob->command, task->errorMessage);
+        RecordJobFailedMessage(jobId, type, command, task->errorMessage);
 			}
 			else
 			{
-				ereport(LOG, (errmsg("cron job %ld failed", jobId)));
+				ereport(LOG, (errmsg("pg_cron: %s job %ld failed", type, jobId)));
 
-        RecordJobFailed(jobId, cronJob->command);
+        RecordJobFailed(jobId, type, command);
 			}
 
 			task->startDeadline = 0;
@@ -1124,7 +1174,16 @@ ManageCronTask(CronTask *task, TimestampTz currentTime)
 		case CRON_TASK_DONE:
 		default:
 		{
-			InitializeCronTask(task, jobId);
+      /* if it's an atJob, RemoveTask and delete the table row TODO */
+      if (atJob != NULL)
+      {
+        RemoveTask(jobId);
+        RemoveAtJob(jobId);
+      }
+      else
+      {
+			  InitializeCronTask(task, jobId);
+      }
 		}
 
 	}

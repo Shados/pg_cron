@@ -29,10 +29,10 @@
 extern void RecordJobScheduled(int64 jobId, const char *command, const char *schedule);
 extern void RecordJobScheduledAt(int64 jobId, const char *command, const char *at);
 extern void RecordJobUnscheduled(int64 jobId, const char *command);
-extern void RecordJobStarted(int64 jobId, const char *command);
-extern void RecordJobCompleted(int64 jobId, const char *command, int tupleCount);
-extern void RecordJobCompletedStatus(int64 jobId, const char *command, const char *commandStatus, const char *tupleCount);
-extern void RecordJobFailed(int64 jobId, const char *command);
-extern void RecordJobFailedMessage(int64 jobId, const char *command, const char *message);
+extern void RecordJobStarted(int64 jobId, const char *type, const char *command);
+extern void RecordJobCompleted(int64 jobId, const char *type, const char *command, int tupleCount);
+extern void RecordJobCompletedStatus(int64 jobId, const char *type, const char *command, const char *commandStatus, const char *tupleCount);
+extern void RecordJobFailed(int64 jobId, const char *type, const char *command);
+extern void RecordJobFailedMessage(int64 jobId, const char *type, const char *command, const char *message);
 
 #endif
